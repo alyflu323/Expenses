@@ -291,7 +291,7 @@ nav svg{width:20px;height:20px;fill:none;stroke:currentColor;stroke-width:1.8;st
         <p class="eyebrow">gastos fijos del mes</p>
         <button class="btn sm" data-add="fijos">+ añadir</button>
       </div>
-      <p class="note" style="margin:-4px 0 12px">Toca el círculo para marcar pagado. Toca el nombre <b>o el importe</b> para cambiarlo, borrarlo o pagar solo una parte.</p>
+      <p class="note" style="margin:-4px 0 12px">Toca el círculo para marcar pagado: el importe aparece solo en <b>Flujo</b> como salida. Toca el nombre o el importe para cambiarlo, borrarlo o pagar solo una parte.</p>
       <div class="list" id="l-fijos"></div>
       <div class="tot"><span class="k">pendiente de pagar</span><span class="v" id="t-fijos">—</span></div>
       <div class="tot min"><span class="k">total del mes</span><span class="v" id="t-fijos-tot">—</span></div>
@@ -340,7 +340,7 @@ nav svg{width:20px;height:20px;fill:none;stroke:currentColor;stroke-width:1.8;st
         <p class="eyebrow">se repite cada mes · ingresos</p>
         <button class="btn sm" data-add="pflujo">+ añadir</button>
       </div>
-      <p class="note" style="margin:-4px 0 10px">Se añaden solos al crear un mes nuevo.</p>
+      <p class="note" style="margin:-4px 0 10px" id="note-pflujo"></p>
       <div class="list" id="l-pflujo"></div>
     </div>
 
@@ -349,7 +349,7 @@ nav svg{width:20px;height:20px;fill:none;stroke:currentColor;stroke-width:1.8;st
         <p class="eyebrow">se repite cada mes · tarjeta</p>
         <button class="btn sm" data-add="ptarjeta">+ añadir</button>
       </div>
-      <p class="note" style="margin:-4px 0 10px">Tus suscripciones. Los gastos fijos se copian solos del mes anterior.</p>
+      <p class="note" style="margin:-4px 0 10px" id="note-ptarjeta"></p>
       <div class="list" id="l-ptarjeta"></div>
     </div>
 
@@ -467,7 +467,7 @@ function seed(){
   const F=(n,i,c)=>({id:uid(),nombre:n,importe:i,pagado:0,cat:c});
   const T=(n,i)=>({id:uid(),nombre:n,importe:i,cat:guess(n,false),fecha:'2026-08-01'});
   return {
-    v:3, tema:'claro',
+    v:4, tema:'claro',
     plantillaFlujo:[{id:uid(),nombre:'Nómina',importe:2135.69,cat:'ingresos'}],
     plantillaTarjeta:[
       {id:uid(),nombre:'Apple',importe:5.99,cat:'subs'},
@@ -536,6 +536,26 @@ function migra(){
     });
     S.v=3;
   }
+  if((S.v||1) < 4){
+    // enlazar lo que ya existe con su plantilla, para poder propagar cambios
+    const link=(plant,campo)=>plant.forEach(p=>Object.values(S.meses).forEach(m=>
+      (m[campo]||[]).forEach(x=>{ if(!x.tpl && x.nombre===p.nombre) x.tpl=p.id; })));
+    link(S.plantillaTarjeta,'tarjeta'); link(S.plantillaFlujo,'flujo');
+    S.v=4;
+  }
+}
+
+/* aplica un cambio de plantilla al mes abierto y a los siguientes ya creados */
+function aplicaPlantilla(tipo, item, accion){
+  const destino = tipo==='ptarjeta' ? 'tarjeta' : 'flujo';
+  mes(MES);
+  Object.keys(S.meses).filter(k=>k>=MES).forEach(k=>{
+    const arr=S.meses[k][destino];
+    const i=arr.findIndex(x=>x.tpl===item.id);
+    if(accion==='del'){ if(i>=0) arr.splice(i,1); return; }
+    if(i<0) arr.push({id:uid(),tpl:item.id,nombre:item.nombre,importe:item.importe,cat:item.cat,fecha:k+'-01'});
+    else { arr[i].nombre=item.nombre; arr[i].importe=item.importe; arr[i].cat=item.cat; }
+  });
 }
 
 /* crea el mes copiando el anterior */
@@ -551,8 +571,8 @@ function mes(k){
     if(prevMes===addM(k,-1))
       m.fijos.push({id:uid(),nombre:LIQ,importe:0,pagado:0,cat:'deuda',auto:true});
   }
-  m.flujo=S.plantillaFlujo.map(f=>({id:uid(),nombre:f.nombre,importe:f.importe,cat:f.cat,fecha:k+'-01'}));
-  m.tarjeta=S.plantillaTarjeta.map(f=>({id:uid(),nombre:f.nombre,importe:f.importe,cat:f.cat,fecha:k+'-01'}));
+  m.flujo=S.plantillaFlujo.map(f=>({id:uid(),tpl:f.id,nombre:f.nombre,importe:f.importe,cat:f.cat,fecha:k+'-01'}));
+  m.tarjeta=S.plantillaTarjeta.map(f=>({id:uid(),tpl:f.id,nombre:f.nombre,importe:f.importe,cat:f.cat,fecha:k+'-01'}));
   S.meses[k]=m; return m;
 }
 
@@ -566,10 +586,29 @@ function syncLiq(k){
   if((f.pagado||0)>f.importe) f.pagado=f.importe;
 }
 
+/* lo que marcas como pagado en Fijos se refleja como salida en Flujo */
+function syncPagos(k){
+  const m=S.meses[k]; if(!m) return;
+  const fecha = (new Date().toISOString().slice(0,7)===k) ? hoy() : k+'-01';
+  m.flujo = m.flujo.filter(x=>{
+    if(!x.origen) return true;
+    const f=m.fijos.find(y=>y.id===x.origen);
+    return f && r2(f.pagado||0) > 0.004;
+  });
+  m.fijos.forEach(f=>{
+    const pag=r2(f.pagado||0);
+    if(pag<=0.004) return;
+    let x=m.flujo.find(y=>y.origen===f.id);
+    if(!x){ x={id:uid(),origen:f.id,fecha,cat:f.cat}; m.flujo.push(x); }
+    x.nombre=f.nombre; x.importe=-pag;
+  });
+}
+
 /* ═══ cálculos ═════════════════════════════════════════ */
 function calc(k){
   const m=mes(k);
   syncLiq(k);
+  syncPagos(k);
   const totalFijos=r2(m.fijos.reduce((a,f)=>a+f.importe,0));
   const pendiente=r2(m.fijos.reduce((a,f)=>a+Math.max(0,f.importe-(f.pagado||0)),0));
   const entra=r2(m.flujo.filter(x=>x.importe>0).reduce((a,b)=>a+b.importe,0));
@@ -652,7 +691,7 @@ function renderDonut(c){
   const push=(id,v)=>{ if(v>0) tot[id]=(tot[id]||0)+v; };
   c.m.fijos.forEach(f=>push(f.cat,f.importe));
   c.m.tarjeta.forEach(t=>push(t.cat,t.importe));
-  c.m.flujo.filter(x=>x.importe<0).forEach(x=>push(x.cat,-x.importe));
+  c.m.flujo.filter(x=>x.importe<0 && !x.origen).forEach(x=>push(x.cat,-x.importe));
   const rows=Object.entries(tot).sort((a,b)=>b[1]-a[1]);
   const suma=rows.reduce((a,b)=>a+b[1],0);
   if(!suma){ $('#c-donut').style.display='none'; return; }
@@ -731,7 +770,7 @@ function renderFlujo(c){
   if(!items.length) el.innerHTML='<div class="empty"><b>Nada por aquí</b>Toca el + para apuntar un movimiento.</div>';
   else el.innerHTML=items.map(x=>`<div class="row"><button class="hit" data-edit="flujo:${x.id}">
       <span class="av" style="background:color-mix(in srgb, ${cat(x.cat).c} var(--tint), transparent)">${cat(x.cat).e}</span>
-      <span class="rmain"><span class="t">${esc(x.nombre)}</span><span class="m">${dia(x.fecha)} · ${cat(x.cat).n}</span></span>
+      <span class="rmain"><span class="t">${esc(x.nombre)}</span><span class="m">${dia(x.fecha)} · ${cat(x.cat).n}${x.origen?' · fijo':''}</span></span>
       <span class="amt ${x.importe>0?'in':''}">${seur(x.importe)}</span>${CHEV}
     </button></div>`).join('');
   $('#t-flujo').textContent=eur(c.saldo);
@@ -763,6 +802,9 @@ function renderPlantillas(){
   };
   P($('#l-pflujo'),S.plantillaFlujo,'pflujo');
   P($('#l-ptarjeta'),S.plantillaTarjeta,'ptarjeta');
+  const mlab=MESES[+MES.split('-')[1]-1];
+  $('#note-pflujo').textContent=`Ingresos que se repiten. Lo que añadas o cambies aquí se aplica a ${mlab} y a los meses siguientes.`;
+  $('#note-ptarjeta').textContent=`Suscripciones de la MyCard. Lo que añadas o cambies aquí se aplica a ${mlab} y a los meses siguientes.`;
 }
 
 /* ═══ acceso a colecciones ═════════════════════════════ */
@@ -778,32 +820,39 @@ function editor(tipo,id){
   const it=id?arr.find(x=>x.id===id):null;
   const esFijo = tipo==='fijos';
   const esFlujo = tipo==='flujo'||tipo==='pflujo';
+  const esPlant = tipo==='pflujo'||tipo==='ptarjeta';
+  const ligado = !!(it && it.origen);
+  const fijoOrig = ligado ? mes(MES).fijos.find(f=>f.id===it.origen) : null;
   const signo = it ? (it.importe>=0?'in':'out') : (esFlujo? (tipo==='pflujo'?'in':'out') : 'out');
   const oldName = it?it.nombre:null;
   const futuros = esFijo && Object.keys(S.meses).some(k=>k>MES);
   const puedeAuto = esFijo && it && !!S.meses[addM(MES,-1)];
   const prevL = MESES[+addM(MES,-1).split('-')[1]-1];
+  const mlab = MESES[+MES.split('-')[1]-1];
+  const bloq = !!(it && (it.auto || ligado));
   const titulos={fijos:'Gasto fijo',flujo:'Movimiento',tarjeta:'Gasto con MyCard',pflujo:'Ingreso que se repite',ptarjeta:'Suscripción de la tarjeta'};
   openSheet(`
     <h2>${it?'Editar':'Nuevo'} · ${titulos[tipo]}</h2>
+    ${ligado?`<p class="note" style="margin:-6px 0 14px">Sale solo porque has marcado como pagado el gasto fijo <b>${esc(fijoOrig?fijoOrig.nombre:it.nombre)}</b>. Para cambiarlo o quitarlo, ve a Fijos.</p>`:''}
     <div class="f"><label>Importe</label><div class="amt-in">
-      <input id="e-imp" inputmode="decimal" placeholder="0,00" value="${it?fmt.format(Math.abs(it.importe)):''}" ${it&&it.auto?'readonly':''}>
+      <input id="e-imp" inputmode="decimal" placeholder="0,00" value="${it?fmt.format(Math.abs(it.importe)):''}" ${bloq?'readonly':''}>
     </div></div>
     ${puedeAuto?`<label class="sw"><input type="checkbox" id="e-auto" ${it.auto?'checked':''}>Calcular solo desde la tarjeta de ${prevL}</label>`:''}
-    ${esFlujo?`<div class="f"><label>Tipo</label><div class="seg" id="e-seg">
+    ${(esFlujo&&!ligado)?`<div class="f"><label>Tipo</label><div class="seg" id="e-seg">
       <button data-v="out" class="${signo==='out'?'on':''}">Sale</button>
       <button data-v="in" class="${signo==='in'?'on':''}">Entra</button>
     </div></div>`:''}
-    <div class="f"><label>Concepto</label><input id="e-nom" placeholder="Mercadona, Piso, Nómina…" value="${esc(it?it.nombre:'')}" autocomplete="off"></div>
+    <div class="f"><label>Concepto</label><input id="e-nom" placeholder="Mercadona, Piso, Nómina…" value="${esc(it?it.nombre:'')}" autocomplete="off" ${ligado?'readonly':''}></div>
     ${(tipo==='flujo'||tipo==='tarjeta')?`<div class="f"><label>Fecha</label><input id="e-fec" type="date" value="${(it&&it.fecha)||hoy()}"></div>`:''}
     ${esFijo?`<div class="f"><label>Ya pagado</label><div class="amt-in"><input id="e-pag" inputmode="decimal" value="${it?fmt.format(it.pagado||0):'0,00'}"></div>
-      <p class="note">Déjalo en 0 si aún no lo has pagado. Sirve para pagos a medias: comida fuera 200, llevas 100.</p></div>`:''}
-    ${futuros?`<label class="sw"><input type="checkbox" id="e-prop">Cambiar también en los meses siguientes</label>`:''}
+      <p class="note">Déjalo en 0 si aún no lo has pagado. Sirve para pagos a medias: comida fuera 200, llevas 100. Lo que pongas aquí sale en Flujo.</p></div>`:''}
+    ${futuros?`<label class="sw"><input type="checkbox" id="e-prop">${it?'Cambiar también en los meses siguientes':'Añadir también a los meses siguientes'}</label>`:''}
+    ${esPlant?`<p class="note" style="margin:-4px 0 12px">Se aplica a ${mlab} y a los meses siguientes que ya tengas creados.</p>`:''}
     <div class="f"><label>Categoría</label><div class="catgrid" id="e-cat">
       ${CATS.map(c=>`<button data-c="${c.id}" class="${(it?it.cat:'')===c.id?'on':''}"><em>${c.e}</em>${c.n}</button>`).join('')}
     </div></div>
     <div class="acts">
-      ${it?'<button class="btn dan" id="e-del">Borrar</button>':''}
+      ${(it&&!ligado)?'<button class="btn dan" id="e-del">Borrar</button>':''}
       <button class="btn pri" id="e-ok">${it?'Guardar':'Añadir'}</button>
     </div>
   `);
@@ -827,25 +876,34 @@ function editor(tipo,id){
     const o = it || {id:uid()};
     o.nombre=nom; o.cat=cc||guess(nom,imp>0);
     if(auto && auto.checked){ o.auto=true; }
-    else { delete o.auto; o.importe=r2(imp); }
+    else { delete o.auto; if(!ligado) o.importe=r2(imp); }
     if(tipo==='flujo'||tipo==='tarjeta') o.fecha=$('#e-fec').value||hoy();
     if(esFijo) o.pagado=Math.min(Math.abs(pnum($('#e-pag').value)), Math.abs(o.importe));
     if(!it) arr.push(o);
     const prop=$('#e-prop');
-    if(prop&&prop.checked&&oldName){
+    if(prop&&prop.checked){
       Object.keys(S.meses).filter(k=>k>MES).forEach(k=>{
-        S.meses[k].fijos.forEach(f=>{ if(f.nombre===oldName && !f.auto){
-          f.nombre=o.nombre; f.importe=o.importe; f.cat=o.cat; f.pagado=Math.min(f.pagado||0,o.importe); } });
+        if(it && oldName){
+          S.meses[k].fijos.forEach(f=>{ if(f.nombre===oldName && !f.auto){
+            f.nombre=o.nombre; f.importe=o.importe; f.cat=o.cat; f.pagado=Math.min(f.pagado||0,o.importe); } });
+        } else {
+          S.meses[k].fijos.push({id:uid(),nombre:o.nombre,importe:o.importe,pagado:0,cat:o.cat});
+        }
       });
     }
+    if(esPlant) aplicaPlantilla(tipo,o,'set');
     closeSheet(); buzz(8); render();
-    if(!it) toast(tipo==='tarjeta'?'Apuntado en la tarjeta':'Apuntado');
+    if(esPlant) toast(it?'Actualizado en '+mlab+' y los meses siguientes':'Añadido a '+mlab+' y a los meses siguientes');
+    else if(!it) toast(tipo==='tarjeta'?'Apuntado en la tarjeta':'Apuntado');
     else if(prop&&prop.checked) toast('Cambiado aquí y en los meses siguientes');
   };
   const del=$('#e-del');
   if(del) del.onclick=()=>{
-    const i=arr.indexOf(it); arr.splice(i,1); closeSheet(); render();
-    toast(`"${it.nombre}" borrado`, 'Deshacer', ()=>{ arr.splice(i,0,it); render(); });
+    const i=arr.indexOf(it); arr.splice(i,1);
+    if(esPlant) aplicaPlantilla(tipo,it,'del');
+    closeSheet(); render();
+    toast(`"${it.nombre}" borrado`, 'Deshacer', ()=>{
+      arr.splice(i,0,it); if(esPlant) aplicaPlantilla(tipo,it,'set'); render(); });
   };
 }
 
