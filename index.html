@@ -438,7 +438,7 @@ function guess(nombre, positivo){
 
 /* ═══ utilidades ═══════════════════════════════════════ */
 const MESES=['enero','febrero','marzo','abril','mayo','junio','julio','agosto','septiembre','octubre','noviembre','diciembre'];
-const MIN='2026-08';
+const MIN='2026-07';
 const fmt=new Intl.NumberFormat('es-ES',{minimumFractionDigits:2,maximumFractionDigits:2});
 const eur=n=>fmt.format(n||0)+' €';
 const seur=n=>(n>0?'+':'')+fmt.format(n||0)+' €';
@@ -561,9 +561,12 @@ function aplicaPlantilla(tipo, item, accion){
 /* crea el mes copiando el anterior */
 function mes(k){
   if(S.meses[k]) return S.meses[k];
-  const prevs=Object.keys(S.meses).filter(x=>x<k).sort();
-  const base=prevs.length?S.meses[prevs[prevs.length-1]]:null;
+  const todos=Object.keys(S.meses).sort();
+  const prevs=todos.filter(x=>x<k);
   const prevMes=prevs.length?prevs[prevs.length-1]:null;
+  // sin mes anterior (julio), copio los fijos del mes más cercano por delante
+  const moldeK = prevMes || todos.find(x=>x>k) || null;
+  const base = moldeK ? S.meses[moldeK] : null;
   const m={fijos:[],flujo:[],tarjeta:[]};
   if(base){
     m.fijos=base.fijos.filter(f=>!f.auto && !/liquidaci/i.test(f.nombre))
@@ -573,7 +576,12 @@ function mes(k){
   }
   m.flujo=S.plantillaFlujo.map(f=>({id:uid(),tpl:f.id,nombre:f.nombre,importe:f.importe,cat:f.cat,fecha:k+'-01'}));
   m.tarjeta=S.plantillaTarjeta.map(f=>({id:uid(),tpl:f.id,nombre:f.nombre,importe:f.importe,cat:f.cat,fecha:k+'-01'}));
-  S.meses[k]=m; return m;
+  S.meses[k]=m;
+  // si el mes siguiente ya existe, su liquidación pasa a calcularse desde este
+  const sig=S.meses[addM(k,1)];
+  if(sig){ const f=sig.fijos.find(x=>/liquidaci/i.test(x.nombre));
+    if(f && f.auto===undefined) f.auto=true; }
+  return m;
 }
 
 /* la liquidación automática siempre refleja la tarjeta del mes anterior */
@@ -826,7 +834,7 @@ function editor(tipo,id){
   const signo = it ? (it.importe>=0?'in':'out') : (esFlujo? (tipo==='pflujo'?'in':'out') : 'out');
   const oldName = it?it.nombre:null;
   const futuros = esFijo && Object.keys(S.meses).some(k=>k>MES);
-  const puedeAuto = esFijo && it && !!S.meses[addM(MES,-1)];
+  const puedeAuto = esFijo && it && !!S.meses[addM(MES,-1)] && (it.auto || /liquidaci/i.test(it.nombre));
   const prevL = MESES[+addM(MES,-1).split('-')[1]-1];
   const mlab = MESES[+MES.split('-')[1]-1];
   const bloq = !!(it && (it.auto || ligado));
@@ -876,7 +884,7 @@ function editor(tipo,id){
     const o = it || {id:uid()};
     o.nombre=nom; o.cat=cc||guess(nom,imp>0);
     if(auto && auto.checked){ o.auto=true; }
-    else { delete o.auto; if(!ligado) o.importe=r2(imp); }
+    else { if(auto) o.auto=false; else delete o.auto; if(!ligado) o.importe=r2(imp); }
     if(tipo==='flujo'||tipo==='tarjeta') o.fecha=$('#e-fec').value||hoy();
     if(esFijo) o.pagado=Math.min(Math.abs(pnum($('#e-pag').value)), Math.abs(o.importe));
     if(!it) arr.push(o);
@@ -972,8 +980,12 @@ function go(v){
   $('#fab').style.display = (v==='ajustes')?'none':'grid';
   window.scrollTo({top:0});
 }
-$('#prev').onclick=()=>{ if(MES>MIN){ MES=addM(MES,-1); render(); } };
-$('#next').onclick=()=>{ MES=addM(MES,1); render(); };
+function vaA(k){
+  const existia=!!S.meses[k]; MES=k; render();
+  if(!existia) toast(MESES[+k.split('-')[1]-1]+' creado con tus gastos fijos');
+}
+$('#prev').onclick=()=>{ if(MES>MIN) vaA(addM(MES,-1)); };
+$('#next').onclick=()=>vaA(addM(MES,1));
 $('#fab').onclick=()=>{
   if(VIEW==='tarjeta') editor('tarjeta',null);
   else if(VIEW==='fijos') editor('fijos',null);
